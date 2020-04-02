@@ -261,8 +261,125 @@ class Human(object):
         return self.location.lon if self.location else self.household.lon
 
     @property
+    def obs_lat(self):
+        if LOCATION_TECH == 'bluetooth':
+            return round(self.lat + np.random.normal(0, 2))
+        else:
+            return round(self.lat + np.random.normal(0, 10))
+
+    @property
+    def obs_lon(self):
+        if LOCATION_TECH == 'bluetooth':
+            return round(self.lon + np.random.normal(0, 2))
+        else:
+            return round(self.lon + np.random.normal(0, 10))
+
+    @property
     def is_contagious(self):
-        return self.is_sick
+        return self.infectiousness
+
+    @property
+    def test_results(self):
+        if self.symptoms == None:
+            return None
+        else:
+            if self.travelled_recently:
+                tested = np.random.rand() > P_TEST
+                if tested:
+                    if self.is_sick:
+                        return 'positive'
+                    else:
+                        if np.random.rand() > P_FALSE_NEGATIVE:
+                            return 'negative'
+                        else:
+                            return 'positive'
+                else:
+                    return None
+
+            else:
+                return None
+
+    @property
+    def wearing_mask(self):
+        mask = False
+        if not self.location == self.household:
+            mask = np.random.rand() < self.carefullness
+        return mask
+
+    @property
+    def reported_symptoms(self):
+        if self.symptoms is None or self.test_results is None or not self.has_app:
+            return None
+        else:
+            if np.random.rand() < self.carefullness:
+                return self.symptoms
+            else:
+                return None
+
+    @property
+    def symptoms(self):
+        # probability of being asymptomatic is basically 50%, but a bit less if you're older
+        # and a bit more if you're younger
+        symptoms = None
+        if self.asymptomatic or self.infection_timestamp is None:
+            pass
+        else:
+            time_since_sick = self.env.timestamp - self.infection_timestamp
+            symptom_start = datetime.timedelta(abs(np.random.normal(SYMPTOM_DAYS, 2.5)))
+            #  print (time_since_sick)
+            #  print (symptom_start)
+            if time_since_sick >= symptom_start:
+                symptoms = ['mild']
+                if self.really_sick:
+                    symptoms.append('severe')
+                if np.random.rand() < 0.9:
+                    symptoms.append('fever')
+                if np.random.rand() < 0.85:
+                    symptoms.append('cough')
+                if np.random.rand() < 0.8:
+                    symptoms.append('fatigue')
+                if np.random.rand() < 0.7:
+                    symptoms.append('trouble_breathing')
+                if np.random.rand() < 0.1:
+                    symptoms.append('runny_nose')
+                if np.random.rand() < 0.4:
+                    symptoms.append('loss_of_taste')
+                if np.random.rand() < 0.4:
+                    symptoms.append('gastro')
+        if self.has_cold:
+            if symptoms is None:
+                symptoms = ['mild', 'runny_nose']
+            if np.random.rand() < 0.2:
+                symptoms.append('fever')
+            if np.random.rand() < 0.6:
+                symptoms.append('cough')
+        if self.has_flu:
+            if symptoms is None:
+                symptoms = ['mild']
+            if np.random.rand() < 0.2:
+                symptoms.append('severe')
+            if np.random.rand() < 0.8:
+                symptoms.append('fever')
+            if np.random.rand() < 0.4:
+                symptoms.append('cough')
+            if np.random.rand() < 0.8:
+                symptoms.append('fatigue')
+            if np.random.rand() < 0.8:
+                symptoms.append('aches')
+            if np.random.rand() < 0.5:
+                symptoms.append('gastro')
+        return symptoms
+
+    @property
+    def infectiousness(self):
+        if self.is_sick:
+            days_sick = (self.env.timestamp - self.infection_timestamp).days
+            if days_sick > len(INFECTIOUSNESS_CURVE):
+                return 0
+            else:
+                return INFECTIOUSNESS_CURVE[days_sick - 1]
+        else:
+            return 0
 
     @property
     def is_sick(self):
@@ -270,39 +387,6 @@ class Human(object):
 
     def __repr__(self):
         return f"person:{self.name}, sick:{self.is_sick}"
-
-    def run(self, city):
-        """
-           1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
-           State  h h h h h h h h h sh sh h  h  h  ac h  h  h  h  h  h  h  h  h
-        """
-        self.household.humans.add(self)
-        while True:
-            # Simulate some tests
-            if self.is_sick and self.env.timestamp - self.infection_timestamp > datetime.timedelta(
-                    days=self.incubation_days):
-                # Todo ensure it only happen once
-                result = random.random() > 0.8
-                Event.log_test(self, time=self.env.timestamp, result=result)
-                # Fixme: After a user get tested positive, assume no more activity
-                break
-
-            elif self.env.hour_of_day() == self.work_start_hour and not self.env.is_weekend() and not WORK_FROM_HOME:
-                yield self.env.process(self.go_to_work())
-
-            elif self.env.hour_of_day() == self.shopping_hours and self.env.day_of_week() == self.shopping_days:
-                yield self.env.process(self.shop(city))
-            elif self.env.hour_of_day() == self.exercise_hours and self.env.day_of_week() == self.exercise_days:  ##LIMIT AND VARIABLE
-                yield self.env.process(self.exercise(city))
-            elif np.random.random() < 0.05 and self.env.is_weekend():
-                yield self.env.process(self.take_a_trip(city))
-            elif self.is_sick and self.env.timestamp - self.infection_timestamp > datetime.timedelta(days=SYMPTOM_DAYS):
-                # Stay home after symptoms
-                # TODO: ensure it only happen once
-                # Event.log_symptom_start(self, time=env.timestamp)
-                pass
-            self.location = self.household
-            yield self.env.process(self.stay_at_home())
 
     def stay_at_home(self):
         self.action = Human.actions['at_home']
@@ -417,3 +501,36 @@ class Human(object):
                 Event.log_contaminate(self, self.env.timestamp)
         yield self.env.timeout(duration / TICK_MINUTE)
         location.humans.remove(self)
+
+    def run(self, city):
+        """
+           1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+           State  h h h h h h h h h sh sh h  h  h  ac h  h  h  h  h  h  h  h  h
+        """
+        self.household.humans.add(self)
+        while True:
+            # Simulate some tests
+            if self.is_sick and self.env.timestamp - self.infection_timestamp > datetime.timedelta(
+                    days=self.incubation_days):
+                # Todo ensure it only happen once
+                result = random.random() > 0.8
+                Event.log_test(self, time=self.env.timestamp, result=result)
+                # Fixme: After a user get tested positive, assume no more activity
+                break
+
+            elif self.env.hour_of_day() == self.work_start_hour and not self.env.is_weekend() and not WORK_FROM_HOME:
+                yield self.env.process(self.go_to_work())
+
+            elif self.env.hour_of_day() == self.shopping_hours and self.env.day_of_week() == self.shopping_days:
+                yield self.env.process(self.shop(city))
+            elif self.env.hour_of_day() == self.exercise_hours and self.env.day_of_week() == self.exercise_days:  ##LIMIT AND VARIABLE
+                yield self.env.process(self.exercise(city))
+            elif np.random.random() < 0.05 and self.env.is_weekend():
+                yield self.env.process(self.take_a_trip(city))
+            elif self.is_sick and self.env.timestamp - self.infection_timestamp > datetime.timedelta(days=SYMPTOM_DAYS):
+                # Stay home after symptoms
+                # TODO: ensure it only happen once
+                # Event.log_symptom_start(self, time=env.timestamp)
+                pass
+            self.location = self.household
+            yield self.env.process(self.stay_at_home())
