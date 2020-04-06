@@ -316,7 +316,7 @@ class Human(object):
 
                 Event.log_recovery(self, self.env.timestamp, dead)
 
-            self.assert_state_changes()
+            # self.assert_state_changes()
 
             # Mobility
 
