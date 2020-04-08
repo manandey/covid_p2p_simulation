@@ -5,6 +5,7 @@ import itertools
 import numpy as np
 from collections import defaultdict
 import datetime
+from addict import Dict
 
 from utils import _normalize_scores, _get_random_age, _draw_random_discreet_gaussian, _json_serialize
 from config import *  # PARAMETERS
@@ -74,6 +75,11 @@ class Human(object):
         self.recovered_timestamp = datetime.datetime.min
         self.really_sick = self.is_exposed and self.rng.random() >= 0.9
         self.never_recovers = self.rng.random() >= 0.99
+
+        # Risk tracking
+        self.risk = 0
+        self.update_initial_risk()
+        self.contact_history = Dict()
 
         # counters and memory
         self.r0 = []
@@ -175,16 +181,6 @@ class Human(object):
                 return None
 
     @property
-    def reported_symptoms(self):
-        if self.symptoms is None or self.test_results is None or not self.human.has_app:
-            return None
-        else:
-            if self.rng.rand() < self.carefullness:
-                return self.symptoms
-            else:
-                return None
-
-    @property
     def symptoms(self):
         # probability of being asymptomatic is basically 50%, but a bit less if you're older
         # and a bit more if you're younger
@@ -266,6 +262,48 @@ class Human(object):
             else:
                 return None
 
+    def update_initial_risk(self):
+        symptoms = self.symptoms if RISK_WITH_TRUE_SYMPTOMS else self.reported_symptoms
+        if self.is_infectious:
+            self.risk += 1
+        elif symptoms is None:
+            self.risk += 0
+        elif 'severe' in symptoms:
+            self.risk += 0.75
+        elif 'mild' in symptoms:
+            self.risk += 0.25
+        else:
+            raise ValueError(f"Invalid symptom: {symptoms}")
+        if CLIP_RISK:
+            self.risk = min(self.risk, 1.)
+
+    def update_risk(self, other: "Human"):
+        if RISK_MODEL == 'yoshua':
+            if self.risk < other.risk:
+                update = (other.risk - self.risk) * RISK_TRANSMISSION_PROBA
+            else:
+                update = 0
+        elif RISK_MODEL == 'lenka':
+            update = other.risk * RISK_TRANSMISSION_PROBA
+        elif RISK_MODEL == 'eilif':
+            if other.name not in self.contact_history:
+                # update is delta_risk
+                update = other.risk * RISK_TRANSMISSION_PROBA
+            else:
+                previous_risk = self.contact_history[other.name].previous_risk
+                carry_over_transmission_proba = self.contact_history[other.name].carry_over_transmission_proba
+                update = ((other.risk - previous_risk) * RISK_TRANSMISSION_PROBA +
+                          previous_risk * carry_over_transmission_proba)
+            # Update contact history
+            self.contact_history[other.name].previous_risk = other.risk
+            self.contact_history[other.name].carry_over_transmission_proba = \
+                RISK_TRANSMISSION_PROBA * (1 - update)
+        else:
+            update = 0
+        self.risk += update
+        if CLIP_RISK:
+            self.risk = min(self.risk, 1.)
+
     def update_r(self, timedelta):
         timedelta /= datetime.timedelta(days=1) # convert to float days
         self.r0.append(self.n_infectious_contacts/timedelta)
@@ -289,6 +327,8 @@ class Human(object):
         """
         self.household.humans.add(self)
         while True:
+            if UPDATE_RISK_EVERY_DAY:
+                self.update_initial_risk()
 
             if self.is_infectious and self.has_logged_symptoms is False:
                 Event.log_symptom_start(self, True, self.env.timestamp)
@@ -419,6 +459,9 @@ class Human(object):
         for h in location.humans:
             if h == self or self.location.location_type == 'household':
                 continue
+
+            # Update risk
+            self.update_risk(h)
 
             distance =  np.sqrt(int(area/len(self.location.humans))) + self.rng.randint(MIN_DIST_ENCOUNTER, MAX_DIST_ENCOUNTER)
             t_near = min(self.leaving_time, h.leaving_time) - max(self.start_time, h.start_time)

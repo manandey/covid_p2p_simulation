@@ -149,6 +149,8 @@ class Event:
                 unobs_payload = { **loc_obs, **loc_unobs, **other_obs, 'human1':{**obs[i], **unobs[i]},
                                     'human2': {**obs[1-i], **unobs[1-i]} }
 
+            unobs_payload.update({'risk': human.risk})
+
             human.events.append({
                 'human_id':human.name,
                 'event_type':Event.encounter,
@@ -201,6 +203,7 @@ class Event:
                 'time': time,
                 'payload': {
                     'observed':{
+                        'risk': human.risk
                     },
                     'unobserved':{
                       'exposed': True
